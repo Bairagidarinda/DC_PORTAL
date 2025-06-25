@@ -8,6 +8,7 @@ import {
   HardDrive,
   Download,
 } from "lucide-react";
+const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
 export default function FileUploader() {
   const [file, setFile] = useState(null);
@@ -72,7 +73,7 @@ export default function FileUploader() {
 
     try {
       const res = await axios.post(
-        `http://localhost:4000${endpoint}`,
+  `${backendUrl}${endpoint}`,
         formData,
         {
           headers: { "Content-Type": "multipart/form-data" },
