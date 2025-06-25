@@ -44,8 +44,8 @@ This web application allows users to upload files (text, image, binary), compres
 
 ### Hosting:
 
-* Frontend: [Vercel](https://vercel.com/) or [Netlify](https://www.netlify.com/)
-* Backend: [Render](https://render.com/) or [Railway](https://railway.app/)
+* Frontend: [Vercel]https://dcfrontend-kappa.vercel.app/
+* Backend: [Render]https://dc-portal-1.onrender.com
 
 ---
 
@@ -55,7 +55,7 @@ This web application allows users to upload files (text, image, binary), compres
 
 ```bash
 git clone https://github.com/yourusername/compression-portal.git
-cd compression-portal
+cd DCPORTAL
 ```
 
 ### 2. Install Backend Dependencies
@@ -89,7 +89,7 @@ Runs at: `http://localhost:5173`
 
 ## 🌐 Demo
 
-🔗 Live Demo: [https://compression-portal.vercel.app](https://compression-portal.vercel.app) *(Replace with actual deployed link)*
+🔗 Live Demo: https://dcfrontend-kappa.vercel.app/ 
 
 ---
 
@@ -125,6 +125,4 @@ This project was built to demonstrate practical applications of data compression
 
 ---
 
-## 🛡 License
 
-MIT License
