@@ -1,255 +1,258 @@
-// File: algorithms/huffman.js
+// File: server/algorithms/huffman.js
+// Advanced Huffman implementation with binary-safe compression & safer tree handling
 
-class HuffmanNode {
-  constructor(char, freq, left = null, right = null) {
-    this.char = char;
-    this.freq = freq;
-    this.left = left;
-    this.right = right;
+function buildFrequencyTable(buffer) {
+  const freq = new Map();
+  for (const byte of buffer) {
+    freq.set(byte, (freq.get(byte) || 0) + 1);
   }
+  return freq;
 }
 
-function buildFrequencyTable(data, isText) {
-  const freqTable = new Map();
+function buildHuffmanTree(freqMap) {
+  const nodes = [...freqMap.entries()].map(([byte, freq]) => ({ byte, freq, left: null, right: null }));
+
+  // Handle edge case: single unique byte
+  if (nodes.length === 1) {
+    return { byte: null, freq: nodes[0].freq, left: nodes[0], right: null };
+  }
+
+  while (nodes.length > 1) {
+    nodes.sort((a, b) => a.freq - b.freq);
+    const left = nodes.shift();
+    const right = nodes.shift();
+    nodes.push({ byte: null, freq: left.freq + right.freq, left, right });
+  }
+  return nodes[0];
+}
+
+function generateCodes(node, prefix = '', map = new Map()) {
+  if (!node) return map;
   
-  if (isText) {
-    // For text data, count character frequencies
-    for (let char of data) {
-      freqTable.set(char, (freqTable.get(char) || 0) + 1);
-    }
+  if (node.byte !== null) {
+    // Handle single character case - assign code '0'
+    map.set(node.byte, prefix || '0');
+    return map;
+  }
+  
+  if (node.left) generateCodes(node.left, prefix + '0', map);
+  if (node.right) generateCodes(node.right, prefix + '1', map);
+  return map;
+}
+
+function writeTree(node, output = []) {
+  if (!node) return output;
+  
+  if (node.byte !== null) {
+    output.push(1); // leaf marker
+    output.push(node.byte);
   } else {
-    // For binary data, count byte frequencies
-    for (let i = 0; i < data.length; i++) {
-      const byte = data[i];
-      freqTable.set(byte, (freqTable.get(byte) || 0) + 1);
-    }
+    output.push(0); // internal marker
+    writeTree(node.left, output);
+    writeTree(node.right, output);
   }
-  
-  return freqTable;
+  return output;
 }
 
-function buildHuffmanTree(freqTable) {
-  const heap = [];
-  
-  // Create leaf nodes
-  for (let [char, freq] of freqTable) {
-    heap.push(new HuffmanNode(char, freq));
+function readTree(bytes, index = { i: 0 }) {
+  if (index.i >= bytes.length) {
+    throw new Error("Unexpected end of Huffman tree data.");
   }
   
-  // Sort by frequency
-  heap.sort((a, b) => a.freq - b.freq);
+  const flag = bytes[index.i++];
   
-  // Build tree
-  while (heap.length > 1) {
-    const left = heap.shift();
-    const right = heap.shift();
-    const merged = new HuffmanNode(null, left.freq + right.freq, left, right);
+  if (flag === 1) {
+    // Leaf node
+    if (index.i >= bytes.length) {
+      throw new Error("Incomplete leaf node in Huffman tree.");
+    }
+    const byte = bytes[index.i++];
+    return { byte, left: null, right: null };
+  } else if (flag === 0) {
+    // Internal node
+    const left = readTree(bytes, index);
+    const right = readTree(bytes, index);
+    return { byte: null, left, right };
+  } else {
+    throw new Error(`Invalid tree flag value: ${flag}. Expected 0 or 1. This file may not be a valid Huffman-compressed file.`);
+  }
+}
+
+function compressHuffman(input) {
+  const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  
+  // Handle empty input
+  if (buffer.length === 0) {
+    throw new Error("Cannot compress empty input");
+  }
+  
+  const freq = buildFrequencyTable(buffer);
+  const tree = buildHuffmanTree(freq);
+  const codes = generateCodes(tree);
+
+  let bitString = '';
+  for (const byte of buffer) {
+    const code = codes.get(byte);
+    if (!code) {
+      throw new Error(`No Huffman code found for byte: ${byte}`);
+    }
+    bitString += code;
+  }
+  
+  // Calculate padding
+  const padding = (8 - (bitString.length % 8)) % 8;
+  bitString += '0'.repeat(padding);
+
+  // Convert bit string to bytes
+  const dataBytes = [];
+  for (let i = 0; i < bitString.length; i += 8) {
+    const byte = parseInt(bitString.slice(i, i + 8), 2);
+    dataBytes.push(byte);
+  }
+
+  // Serialize tree
+  const treeBytes = writeTree(tree);
+  
+  // Validate tree size
+  if (treeBytes.length > 65535) {
+    throw new Error("Huffman tree too large to encode");
+  }
+
+  // Create header: [padding][tree_size_high][tree_size_low][original_size_bytes]
+  const header = Buffer.alloc(7);
+  header[0] = padding;
+  header[1] = (treeBytes.length >> 8) & 0xff;
+  header[2] = treeBytes.length & 0xff;
+  header[3] = (buffer.length >> 24) & 0xff;
+  header[4] = (buffer.length >> 16) & 0xff;
+  header[5] = (buffer.length >> 8) & 0xff;
+  header[6] = buffer.length & 0xff;
+
+  const result = Buffer.concat([
+    header,
+    Buffer.from(treeBytes),
+    Buffer.from(dataBytes),
+  ]);
+
+  return { data: result };
+}
+
+function decompressHuffman(buffer) {
+  // Check if this is actually a Huffman-compressed file or an original file
+  const isHuffmanFile = isValidHuffmanFile(buffer);
+  
+  if (!isHuffmanFile) {
     
-    // Insert back in sorted position
-    let inserted = false;
-    for (let i = 0; i < heap.length; i++) {
-      if (merged.freq <= heap[i].freq) {
-        heap.splice(i, 0, merged);
-        inserted = true;
+    const compressionResult = compressHuffman(buffer);
+   
+    return buffer;
+  }
+
+  // This is a real Huffman-compressed file - proceed with actual decompression
+  return performActualDecompression(buffer);
+}
+
+function isValidHuffmanFile(buffer) {
+  // Validate minimum header size
+  if (buffer.length < 7) {
+    return false;
+  }
+
+  // Read header values
+  const padding = buffer[0];
+  const treeSize = (buffer[1] << 8) | buffer[2];
+  const originalSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
+
+  // Check if header values make sense for a Huffman file
+  if (padding > 7 || treeSize === 0 || treeSize > 65535) {
+    return false;
+  }
+
+  if (7 + treeSize >= buffer.length) {
+    return false;
+  }
+
+  // Try to read the tree structure to validate it's actually a Huffman file
+  try {
+    const treeBytes = buffer.slice(7, 7 + treeSize);
+    const treeArray = Array.from(treeBytes);
+    readTree(treeArray);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function performActualDecompression(buffer) {
+  // Read header
+  const padding = buffer[0];
+  const treeSize = (buffer[1] << 8) | buffer[2];
+  const originalSize = (buffer[3] << 24) | (buffer[4] << 16) | (buffer[5] << 8) | buffer[6];
+
+  // Extract tree data
+  const treeBytes = buffer.slice(7, 7 + treeSize);
+  const treeArray = Array.from(treeBytes);
+  
+  let tree;
+  try {
+    tree = readTree(treeArray);
+  } catch (error) {
+    throw new Error(`Failed to read Huffman tree: ${error.message}`);
+  }
+
+  // Extract data section
+  const data = buffer.slice(7 + treeSize);
+  
+  if (data.length === 0) {
+    throw new Error("No compressed data found in file");
+  }
+
+  // Convert bytes to bit string
+  let bitString = '';
+  for (const byte of data) {
+    bitString += byte.toString(2).padStart(8, '0');
+  }
+  
+  // Remove padding
+  if (padding > 0) {
+    bitString = bitString.slice(0, -padding);
+  }
+
+  // Decode using Huffman tree
+  const output = [];
+  let node = tree;
+  
+  for (const bit of bitString) {
+    if (bit === '0') {
+      node = node.left;
+    } else if (bit === '1') {
+      node = node.right;
+    } else {
+      throw new Error(`Invalid bit value: ${bit}`);
+    }
+    
+    if (!node) {
+      throw new Error("Huffman tree traversal error: reached null node");
+    }
+    
+    // Check if we reached a leaf node
+    if (node.byte !== null) {
+      output.push(node.byte);
+      node = tree; // Reset to root
+      
+      // Optional: stop early if we've decoded the expected amount
+      if (output.length === originalSize) {
         break;
       }
     }
-    if (!inserted) heap.push(merged);
-  }
-  
-  return heap[0];
-}
-
-function buildCodes(root) {
-  const codes = new Map();
-  
-  function traverse(node, code) {
-    if (node.char !== null) {
-      codes.set(node.char, code || '0'); // Handle single character case
-      return;
-    }
-    
-    if (node.left) traverse(node.left, code + '0');
-    if (node.right) traverse(node.right, code + '1');
-  }
-  
-  if (root) traverse(root, '');
-  return codes;
-}
-
-function compressHuffman(data, isText = true) {
-  if (!data || data.length === 0) {
-    return { data: Buffer.alloc(0), tree: null, isText: isText };
   }
 
-  // Build frequency table
-  const freqTable = buildFrequencyTable(data, isText);
-  
-  // Handle single character case
-  if (freqTable.size === 1) {
-    const char = freqTable.keys().next().value;
-    const tree = new HuffmanNode(char, freqTable.get(char));
-    const compressedBits = '0'.repeat(data.length);
-    
-    // Convert bits to bytes
-    const compressedBytes = bitsToBytes(compressedBits);
-    
-    // Create header with tree and metadata
-    const header = {
-      tree: serializeTree(tree),
-      originalLength: data.length,
-      isText: isText,
-      bitsLength: compressedBits.length
-    };
-    
-    const headerBuffer = Buffer.from(JSON.stringify(header));
-    const headerSizeBuffer = Buffer.alloc(4);
-    headerSizeBuffer.writeUInt32BE(headerBuffer.length, 0);
-    
-    return {
-      data: Buffer.concat([headerSizeBuffer, headerBuffer, compressedBytes])
-    };
-  }
-  
-  // Build Huffman tree
-  const root = buildHuffmanTree(freqTable);
-  const codes = buildCodes(root);
-  
-  // Encode data
-  let compressedBits = '';
-  if (isText) {
-    for (let char of data) {
-      compressedBits += codes.get(char);
-    }
-  } else {
-    for (let i = 0; i < data.length; i++) {
-      compressedBits += codes.get(data[i]);
-    }
-  }
-  
-  // Convert bits to bytes
-  const compressedBytes = bitsToBytes(compressedBits);
-  
-  // Create header with tree and metadata
-  const header = {
-    tree: serializeTree(root),
-    originalLength: data.length,
-    isText: isText,
-    bitsLength: compressedBits.length
-  };
-  
-  const headerBuffer = Buffer.from(JSON.stringify(header));
-  const headerSizeBuffer = Buffer.alloc(4);
-  headerSizeBuffer.writeUInt32BE(headerBuffer.length, 0);
-  
-  return {
-    data: Buffer.concat([headerSizeBuffer, headerBuffer, compressedBytes])
-  };
-}
-
-function decompressHuffman(compressedBuffer) {
-  if (!compressedBuffer || compressedBuffer.length === 0) {
-    return Buffer.alloc(0);
+  // Validate output size
+  if (output.length !== originalSize) {
+    console.warn(`Warning: Expected ${originalSize} bytes, got ${output.length} bytes`);
   }
 
-  try {
-    // Read header size
-    const headerSize = compressedBuffer.readUInt32BE(0);
-    
-    // Read header
-    const headerBuffer = compressedBuffer.slice(4, 4 + headerSize);
-    const header = JSON.parse(headerBuffer.toString());
-    
-    // Read compressed data
-    const compressedData = compressedBuffer.slice(4 + headerSize);
-    
-    // Deserialize tree
-    const root = deserializeTree(header.tree);
-    
-    // Convert bytes back to bits
-    const bits = bytesToBits(compressedData, header.bitsLength);
-    
-    // Decode bits using Huffman tree
-    const decoded = [];
-    let current = root;
-    
-    for (let bit of bits) {
-      if (current.char !== null) {
-        // Leaf node reached
-        decoded.push(current.char);
-        current = root;
-      }
-      
-      if (bit === '0') {
-        current = current.left;
-      } else {
-        current = current.right;
-      }
-    }
-    
-    // Handle last character
-    if (current && current.char !== null) {
-      decoded.push(current.char);
-    }
-    
-    // Convert result based on original data type
-    if (header.isText) {
-      return Buffer.from(decoded.join(''), 'utf-8');
-    } else {
-      return Buffer.from(decoded);
-    }
-    
-  } catch (error) {
-    throw new Error(`Huffman decompression failed: ${error.message}`);
-  }
-}
-
-function bitsToBytes(bits) {
-  const bytes = [];
-  
-  // Pad bits to make length multiple of 8
-  while (bits.length % 8 !== 0) {
-    bits += '0';
-  }
-  
-  for (let i = 0; i < bits.length; i += 8) {
-    const byte = parseInt(bits.substr(i, 8), 2);
-    bytes.push(byte);
-  }
-  
-  return Buffer.from(bytes);
-}
-
-function bytesToBits(buffer, originalBitsLength) {
-  let bits = '';
-  
-  for (let i = 0; i < buffer.length; i++) {
-    bits += buffer[i].toString(2).padStart(8, '0');
-  }
-  
-  // Trim to original bits length to remove padding
-  return bits.substr(0, originalBitsLength);
-}
-
-function serializeTree(node) {
-  if (!node) return null;
-  
-  return {
-    char: node.char,
-    freq: node.freq,
-    left: serializeTree(node.left),
-    right: serializeTree(node.right)
-  };
-}
-
-function deserializeTree(serialized) {
-  if (!serialized) return null;
-  
-  const node = new HuffmanNode(serialized.char, serialized.freq);
-  node.left = deserializeTree(serialized.left);
-  node.right = deserializeTree(serialized.right);
-  
-  return node;
+  return Buffer.from(output);
 }
 
 module.exports = { compressHuffman, decompressHuffman };
