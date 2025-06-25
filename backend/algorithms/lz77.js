@@ -40,6 +40,60 @@ function compressLZ77(inputBuffer) {
 }
 
 function decompressLZ77(compressedBuffer) {
+  // Check if this is actually an LZ77-compressed file or an original file
+  const isLZ77File = isValidLZ77File(compressedBuffer);
+  
+  if (!isLZ77File) {
+    // This appears to be an original file, return as-is to show original statistics
+    return compressedBuffer;
+  }
+
+  // This is a real LZ77-compressed file - proceed with actual decompression
+  return performActualDecompression(compressedBuffer);
+}
+
+function isValidLZ77File(buffer) {
+  try {
+    const compressed = buffer.toString("binary");
+    
+    // Check if the content follows LZ77 pattern with <distance,length,char> format
+    const pattern = /<([0-9]+),([0-9]+),([^>]?)>/g;
+    let match;
+    let matchCount = 0;
+    let totalLength = 0;
+    
+    // Test if we can find valid LZ77 patterns
+    while ((match = pattern.exec(compressed)) !== null) {
+      matchCount++;
+      totalLength += match[0].length;
+      
+      // Basic validation of distance and length values
+      const distance = parseInt(match[1], 10);
+      const length = parseInt(match[2], 10);
+      
+      // Reasonable bounds check
+      if (distance < 0 || distance > 2048 || length < 0 || length > 32) {
+        return false;
+      }
+      
+      // If we found some matches, it's likely an LZ77 file
+      if (matchCount >= 2) {
+        break;
+      }
+    }
+    
+    // If we found valid LZ77 patterns and they cover a reasonable portion of the file
+    if (matchCount > 0 && totalLength > compressed.length * 0.1) {
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
+function performActualDecompression(compressedBuffer) {
   const compressed = compressedBuffer.toString("binary");
   const output = [];
   const pattern = /<([0-9]+),([0-9]+),([^>]?)>/g;
@@ -50,8 +104,16 @@ function decompressLZ77(compressedBuffer) {
     const length = parseInt(match[2], 10);
     const char = match[3];
 
+    // Validate distance
+    if (distance > output.length) {
+      throw new Error(`Invalid LZ77 distance: ${distance}, output length: ${output.length}`);
+    }
+
     const start = output.length - distance;
     for (let i = 0; i < length; i++) {
+      if (start + i < 0 || start + i >= output.length) {
+        throw new Error("LZ77 reference out of bounds");
+      }
       output.push(output[start + i]);
     }
     if (char) output.push(char);
